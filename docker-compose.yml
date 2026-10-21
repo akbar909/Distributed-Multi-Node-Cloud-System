@@ -1,0 +1,156 @@
+services:
+  # =============================================================
+  # Infrastructure Services
+  # =============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: cdc-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - cdc-net
+
+  mongodb:
+    image: mongo:7
+    container_name: cdc-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - cdc-net
+
+  # =============================================================
+  # Backend API Server
+  # =============================================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cdc-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MONGO_URL=${MONGO_URL:-mongodb://mongodb:27017}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-${REDIS_URL:-redis://redis:6379/1}}
+      - STORAGE_PATH=${STORAGE_PATH:-/app/storage}
+    volumes:
+      - ./backend:/app
+      - image_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - cdc-net
+
+  # =============================================================
+  # Celery Workers
+  # =============================================================
+  worker-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cdc-worker-1
+    command: celery -A app.tasks.celery_app worker -Q default -c 2 -n worker-1@%h --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - MONGO_URL=${MONGO_URL:-mongodb://mongodb:27017}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-${REDIS_URL:-redis://redis:6379/1}}
+      - STORAGE_PATH=${STORAGE_PATH:-/app/storage}
+    volumes:
+      - ./backend:/app
+      - image_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - cdc-net
+
+  worker-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cdc-worker-2
+    command: celery -A app.tasks.celery_app worker -Q default -c 2 -n worker-2@%h --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - MONGO_URL=${MONGO_URL:-mongodb://mongodb:27017}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-${REDIS_URL:-redis://redis:6379/1}}
+      - STORAGE_PATH=${STORAGE_PATH:-/app/storage}
+    volumes:
+      - ./backend:/app
+      - image_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - cdc-net
+
+  # =============================================================
+  # Frontend
+  # =============================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cdc-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - cdc-net
+
+# =============================================================
+# Volumes & Networks
+# =============================================================
+volumes:
+  redis_data:
+  mongo_data:
+  image_storage:
+    driver: local
+
+networks:
+  cdc-net:
+    driver: bridge
